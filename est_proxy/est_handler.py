@@ -63,6 +63,8 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
     def _auth_check(self):
         """ split ca_certs """
         self.logger.debug('ESTSrvHandler._auth_check()')
+        if self.skip_authcheck_enroll and self.path == '/.well-known/est/simpleenroll':
+             return True
         authenticated = False
         if self.connection.session.clientCertChain or self.connection.session.srpUsername:
             if self.connection.session.clientCertChain:
@@ -154,6 +156,8 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
             else:
                 self.logger.error('ESTSrvHandler._config_load(): CAhandler configuration missing in config file')
                 ca_handler_module = None
+        if 'CAhandler' in config_dic and 'skip_authcheck_enroll' in config_dic['CAhandler']:
+            self.skip_authcheck_enroll = config_dic.getboolean('CAhandler', 'skip_authcheck_enroll', fallback=False)
 
         if ca_handler_module:
             # store handler in variable

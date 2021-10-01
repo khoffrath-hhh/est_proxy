@@ -487,6 +487,7 @@ class CAhandler(object):
                 else:
                     error = 'urn:ietf:params:acme:badCSR'
             except BaseException as err:
+                error = err
                 self.logger.error('CAhandler.enroll() error: {0}'.format(err))
 
         self.logger.debug('CAhandler.enroll() ended')

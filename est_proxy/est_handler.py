@@ -5,8 +5,18 @@ import tempfile
 import subprocess
 import importlib
 from http.server import BaseHTTPRequestHandler
+import codecs
+import OpenSSL
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import rsa, ec
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
+
+from cryptography.x509.oid import AttributeOID, NameOID
+
 # pylint: disable=E0401
-from est_proxy.helper import config_load, ca_handler_get, logger_setup # ,b64_encode, cert_san_get, cert_extensions_get, cert_eku_get
+from est_proxy.helper import config_load, ca_handler_get, logger_setup, build_pem_file, b64_url_recode # ,b64_encode, cert_san_get, cert_extensions_get, cert_eku_get
+
 from est_proxy.version import __version__
 
 class ESTSrvHandler(BaseHTTPRequestHandler):
@@ -63,7 +73,8 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
     def _auth_check(self):
         """ split ca_certs """
         self.logger.debug('ESTSrvHandler._auth_check()')
-        if self.skip_authcheck_enroll and self.path == '/.well-known/est/simpleenroll':
+        if (self.skip_authcheck_serverkeygen and self.path == '/.well-known/est/serverkeygen') or \
+           (self.skip_authcheck_enroll and self.path == '/.well-known/est/simpleenroll'):
              return True
         authenticated = False
         if self.connection.session.clientCertChain or self.connection.session.srpUsername:
@@ -126,6 +137,48 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
         self.logger.debug('ESTSrvHandler._cacerts_get() ended with: {0}'.format(bool(cert_pkcs7)))
         return (error, cert_pkcs7)
 
+    def _serverkeygen(self, csr):
+        """ Create private key, create new CSR and enroll """
+        self.logger.debug('ESTSrvHandler._serverkeygen()')
+
+        # Read CSR
+        pem_file = build_pem_file(self.logger, None, b64_url_recode(self.logger, csr), True, True)
+        source_csr = x509.load_pem_x509_csr(pem_file.encode('utf-8'))
+
+        # Create new private key with settings derived from the public key of the CSR
+        public_key = source_csr.public_key()
+        if isinstance(public_key, ec.EllipticCurvePublicKey):
+            private_key = ec.generate_private_key(curve=public_key.curve)
+        else:
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=public_key.key_size)
+
+        # Create new CSR derived from the source CSR
+        builder = x509.CertificateSigningRequestBuilder()
+        builder = builder.subject_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, source_csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value),]))
+        for ext in source_csr.extensions:
+            builder.add_extension(ext)
+        builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical = True)
+        new_csr = builder.sign(private_key=private_key, algorithm=source_csr.signature_hash_algorithm)
+
+        # Prepare CSR for enrollment
+        csr_pem = new_csr.public_bytes(Encoding.PEM).decode(encoding='ascii')
+        csr_pem = csr_pem.removeprefix('-----BEGIN CERTIFICATE REQUEST-----')
+        csr_pem = csr_pem.removesuffix('-----END CERTIFICATE REQUEST-----')
+        csr_pem = csr_pem.strip()
+
+        # Enroll
+        (error, cert) = self._cert_enroll(csr_pem)
+
+        # Transform private key to be returned to the client
+        private_key_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode('utf-8')
+        private_key_pem = private_key_pem.strip()
+        private_key_pem = private_key_pem.removeprefix('-----BEGIN PRIVATE KEY-----')
+        private_key_pem = private_key_pem.removesuffix('-----END PRIVATE KEY-----')
+        private_key_pem = private_key_pem.strip()
+
+        return (error, private_key_pem, cert)
+
     def _config_load(self):
         """ load config from file """
         self.logger.debug('ESTSrvHandler._config_load()')
@@ -156,6 +209,8 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
             else:
                 self.logger.error('ESTSrvHandler._config_load(): CAhandler configuration missing in config file')
                 ca_handler_module = None
+        if 'CAhandler' in config_dic and 'skip_authcheck_serverkeygen' in config_dic['CAhandler']:
+            self.skip_authcheck_serverkeygen = config_dic.getboolean('CAhandler', 'skip_authcheck_serverkeygen', fallback=False)
         if 'CAhandler' in config_dic and 'skip_authcheck_enroll' in config_dic['CAhandler']:
             self.skip_authcheck_enroll = config_dic.getboolean('CAhandler', 'skip_authcheck_enroll', fallback=False)
 
@@ -288,7 +343,25 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
         connection_authenticated = self._auth_check()
 
         if connection_authenticated:
-            if data and (self.path == '/.well-known/est/simpleenroll' or self.path == '/.well-known/est/simplereenroll'):
+            if data and (self.path == '/.well-known/est/serverkeygen'):
+                # serverkeygen
+                (error, private_key, cert) = self._serverkeygen(data)
+                if not error:
+                    code = 200
+                    content_type = 'multipart/mixed; boundary=estServerBoundary'
+                    content = '--estServerBoundary\n' \
+                            + 'Content-Type: application/pkcs8\n' \
+                            + 'Content-Transfer-Encoding: base64\n\n' \
+                            + private_key.strip() + '\n\n'\
+                            + '--estServerBoundary\n' \
+                            + 'Content-Type: application/pkcs7-mime; smime-type=certs-only\n' \
+                            + 'Content-Transfer-Encoding: base64\n\n' \
+                            + cert.strip()  +'\n\n' \
+                            + '--estServerBoundary--\n'
+                    encoding = 'base64'
+                else:
+                    code = 500
+            elif data and (self.path == '/.well-known/est/simpleenroll' or self.path == '/.well-known/est/simplereenroll'):
                 # enroll certificate
                 (error, cert) = self._cert_enroll(data)
                 if not error:

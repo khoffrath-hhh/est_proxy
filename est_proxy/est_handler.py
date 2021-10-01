@@ -5,15 +5,11 @@ import tempfile
 import subprocess
 import importlib
 from http.server import BaseHTTPRequestHandler
-import codecs
 import OpenSSL
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
-
-from cryptography.x509.oid import AttributeOID, NameOID
-
+from cryptography.x509.oid import NameOID
 # pylint: disable=E0401
 from est_proxy.helper import config_load, ca_handler_get, logger_setup, build_pem_file, b64_url_recode # ,b64_encode, cert_san_get, cert_extensions_get, cert_eku_get
 
@@ -170,7 +166,7 @@ class ESTSrvHandler(BaseHTTPRequestHandler):
         # Enroll
         (error, cert) = self._cert_enroll(csr_pem)
 
-        # Transform private key to be returned to the client
+        # Transform private key to a format suitable to be returned to the client
         private_key_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode('utf-8')
         private_key_pem = private_key_pem.strip()
         private_key_pem = private_key_pem.removeprefix('-----BEGIN PRIVATE KEY-----')

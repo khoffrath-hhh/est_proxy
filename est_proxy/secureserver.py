@@ -61,7 +61,9 @@ class SecureServer(ThreadingMixIn, TLSSocketServerMixIn, HTTPServer):
                     self.logger.error('Secureserver._load_config() cert_file {0} could not be loaded.'.format(config_dic['Daemon']['cert_file']))
             else:
                 self.logger.error('Secureserver._load_config() Daemon configured but no cert_file specified.')
-
+            self.config_dic['Daemon']['require_client_certificate'] = False
+            if 'require_client_certificate' in config_dic['Daemon']:
+                self.config_dic['Daemon']['require_client_certificate'] = config_dic['Daemon']['require_client_certificate']
         if 'SRP' in config_dic:
             self.config_dic['SRP'] = {}
             if 'userdb' in config_dic['SRP']:
@@ -72,8 +74,8 @@ class SecureServer(ThreadingMixIn, TLSSocketServerMixIn, HTTPServer):
         self.logger.debug('SecureServer.handshake()')
 
         hs_options = hssrv_options_get(self.logger, self.config_dic)
-        request_pha = True
-        require_pha = True
+        request_pha = self.config_dic['Daemon']['require_client_certificate']
+        require_pha = self.config_dic['Daemon']['require_client_certificate']
 
         result = False
         try:
